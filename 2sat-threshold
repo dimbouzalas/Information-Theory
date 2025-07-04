@@ -1,0 +1,87 @@
+import os
+import shutil
+import random
+import numpy as np
+from pysat.formula import CNF
+from pysat.solvers import Glucose3
+import matplotlib.pyplot as plt
+import re
+from collections import defaultdict
+
+
+# Parameters
+
+ratios = np.linspace(0.94, 1.06, num=50)
+n_vars = 10000
+num_instances = 2000
+num_repeats = 5  
+
+
+# Accumulate results here
+
+all_runs = defaultdict(list)
+
+for repeat in range(num_repeats):
+    print(f"\n Repeat {repeat + 1}/{num_repeats}")
+    
+    # Clean up
+    if os.path.exists("generated_2sat"):
+        shutil.rmtree("generated_2sat")
+    
+    # Generate data
+    for r in ratios:
+        folder = f"generated_2sat/data_r{r:.3f}".replace('.', '_')
+        os.makedirs(folder, exist_ok=True)
+        for i in range(num_instances):
+            n_clauses = int(r * n_vars)
+            clauses = set()
+            while len(clauses) < n_clauses:
+                a = random.randint(1, n_vars)
+                b = random.randint(1, n_vars)
+                while a == b:
+                    b = random.randint(1, n_vars)
+                a *= random.choice([-1, 1])
+                b *= random.choice([-1, 1])
+                clause = tuple(sorted((a, b)))
+                if abs(clause[0]) != abs(clause[1]):
+                    clauses.add(clause)
+            with open(f"{folder}/instance_{i:04d}.cnf", "w") as f:
+                f.write(f"p cnf {n_vars} {len(clauses)}\n")
+                for a_, b_ in clauses:
+                    f.write(f"{a_} {b_} 0\n")
+    
+    # Solve
+    for r in ratios:
+        folder = f"generated_2sat/data_r{r:.3f}".replace('.', '_')
+        files = [f for f in os.listdir(folder) if f.endswith(".cnf")]
+        sat_count = 0
+        for file in files:
+            cnf = CNF(from_file=os.path.join(folder, file))
+            solver = Glucose3()
+            solver.append_formula(cnf.clauses)
+            if solver.solve():
+                sat_count += 1
+            solver.delete()
+        fraction = sat_count / len(files)
+        all_runs[r].append(fraction)
+        print(f" r = {r:.3f} → {sat_count}/{len(files)} SAT")
+
+
+# Prepare data
+sorted_r = sorted(all_runs.keys())
+means = [np.mean(all_runs[r]) for r in sorted_r]
+stds = [np.std(all_runs[r]) for r in sorted_r]
+
+
+# Plot
+plt.figure(figsize=(10, 6))
+plt.errorbar(sorted_r, means, yerr=stds, fmt='-o', capsize=3, label="Mean ± Std Dev")
+plt.axvline(1.0, color='red', linestyle='--', label='Theoretical Threshold (r = 1)')
+plt.title(f"2-SAT Phase Transition (Averaged over {num_repeats} runs)", fontsize=14)
+plt.xlabel("Clause-to-Variable Ratio (r)", fontsize=12)
+plt.ylabel("Fraction of SAT Instances", fontsize=12)
+plt.grid(True)
+plt.legend()
+plt.tight_layout()
+plt.savefig("2sat_mean_phase_plot.png")
+plt.show()
