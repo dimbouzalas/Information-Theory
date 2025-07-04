@@ -1,0 +1,46 @@
+import numpy as np
+from concurrent.futures import ProcessPoolExecutor
+from collections import defaultdict
+import matplotlib.pyplot as plt
+from tqdm import tqdm
+import multiprocessing
+from tailbiting_sat import solve_instance
+
+
+# Parameters
+ratios = np.linspace(0.94, 1.06, num=50)
+num_instances = 2000
+num_repeats = 5
+NUM_WORKERS = multiprocessing.cpu_count()
+
+def run_experiment():
+    all_runs = defaultdict(list)
+    for rep in range(num_repeats):
+        print(f"\n Repeat {rep + 1}/{num_repeats}")
+        with ProcessPoolExecutor(max_workers=NUM_WORKERS) as executor:
+            for r in tqdm(ratios, desc=f"Repeat {rep + 1}"):
+                results = list(executor.map(solve_instance, [r] * num_instances))
+                all_runs[r].append(sum(results) / num_instances)
+    return all_runs
+
+def plot_results(all_runs):
+    means = [np.mean(all_runs[r]) for r in ratios]
+    stds = [np.std(all_runs[r]) for r in ratios]
+    plt.figure(figsize=(12, 6))
+    plt.errorbar(ratios, means, yerr=stds, fmt='o-', capsize=3, label='Tailbiting SC 2-SAT')
+    plt.axvline(1.0, linestyle='--', color='red', label='r=1 (Threshold)')
+    plt.grid(True, linestyle='--', alpha=0.5)
+    plt.xlabel("Clause-to-Variable Ratio")
+    plt.ylabel("Fraction Satisfiable")
+    plt.legend()
+    plt.title("Tailbiting Spatially Coupled 2-SAT (Glucose)")
+    plt.tight_layout()
+    plt.show()
+
+if __name__ == "__main__":
+    import time
+    multiprocessing.set_start_method("spawn", force=True)
+    start = time.time()
+    results = run_experiment()
+    print(f"\n Done in {time.time() - start:.2f}s")
+    plot_results(results)
