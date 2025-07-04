@@ -9,7 +9,7 @@ import re
 from collections import defaultdict
 
 
-# Parameters
+
 
 ratios = np.linspace(0.94, 1.06, num=50)
 n_vars = 10000
@@ -17,18 +17,18 @@ num_instances = 2000
 num_repeats = 5  
 
 
-# Accumulate results here
+
 
 all_runs = defaultdict(list)
 
 for repeat in range(num_repeats):
     print(f"\n Repeat {repeat + 1}/{num_repeats}")
     
-    # Clean up
+   
     if os.path.exists("generated_2sat"):
         shutil.rmtree("generated_2sat")
     
-    # Generate data
+    
     for r in ratios:
         folder = f"generated_2sat/data_r{r:.3f}".replace('.', '_')
         os.makedirs(folder, exist_ok=True)
@@ -50,7 +50,7 @@ for repeat in range(num_repeats):
                 for a_, b_ in clauses:
                     f.write(f"{a_} {b_} 0\n")
     
-    # Solve
+    
     for r in ratios:
         folder = f"generated_2sat/data_r{r:.3f}".replace('.', '_')
         files = [f for f in os.listdir(folder) if f.endswith(".cnf")]
@@ -67,13 +67,13 @@ for repeat in range(num_repeats):
         print(f" r = {r:.3f} → {sat_count}/{len(files)} SAT")
 
 
-# Prepare data
+
 sorted_r = sorted(all_runs.keys())
 means = [np.mean(all_runs[r]) for r in sorted_r]
 stds = [np.std(all_runs[r]) for r in sorted_r]
 
 
-# Plot
+
 plt.figure(figsize=(10, 6))
 plt.errorbar(sorted_r, means, yerr=stds, fmt='-o', capsize=3, label="Mean ± Std Dev")
 plt.axvline(1.0, color='red', linestyle='--', label='Theoretical Threshold (r = 1)')
