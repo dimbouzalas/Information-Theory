@@ -1,4 +1,3 @@
-import os
 import random
 import numpy as np
 import matplotlib.pyplot as plt
@@ -7,123 +6,114 @@ from collections import defaultdict
 from joblib import Parallel, delayed
 from tqdm.notebook import tqdm
 
-ratios = np.linspace(3.8, 4.8, 30)  
-n_vars = 200                       
-n_instances = 500                  
-repeats = 5                        
-n_jobs = 8                         
 
+ratios      = np.linspace(3.8, 4.8, 50)
+n_vars      = 100            
+n_instances = 100            
+repeats     = 5
+n_jobs      = 8
 
-L = 50
-n = 6
-w = 3
-N = L * n
+# SC parameters: ensure L * n == n_vars
+L           = 10             
+n           = 10             
+w           = 4             
+anchor_b    = 2             
+bias_strength = 1.5          
 
-
-
+assert L * n == n_vars, 
 
 def generate_uniform_3sat(n_vars, r):
-    n_clauses = int(r * n_vars)
-    clauses = set()
-    while len(clauses) < n_clauses:
-        vars_ = random.sample(range(1, n_vars + 1), 3)
-        clause = tuple(sorted(var * random.choice([-1, 1]) for var in vars_))
-        clauses.add(clause)
-    return list(clauses)
+    m = int(r * n_vars)
+    S = set()
+    while len(S) < m:
+        vs = random.sample(range(1, n_vars+1), 3)
+        lits = tuple(sorted(v * random.choice([-1,1]) for v in vs))
+        S.add(lits)
+    return [list(c) for c in S]
 
-def generate_tailbiting_spatially_coupled_3sat(L, n, r, w):
-   
-
-    N = L * n
+def generate_tailbiting_sc_3sat(L, n, r, w, anchor_b, bias_strength):
+    N = L*n
     M = int(r * N)
     clauses = []
-
-    while len(clauses) < M:
-        # Random base block and window
-        base = random.randint(0, L - 1)
-        window_blocks = [(base + i) % L for i in range(w)]
-
-       
-        if len(window_blocks) < 3:
-            continue
-        blocks = random.sample(window_blocks, 3)
+    for _ in range(M):
+        # pick a center block uniform
+        center = random.randrange(L)
+        window = [ (center + d) % L for d in range(w) ]
 
        
-        vars_ = []
-        for b in blocks:
-            v = random.randint(b * n, (b + 1) * n - 1)
-            vars_.append(v)
+        weights = np.exp(-bias_strength * np.arange(w))
+        weights /= weights.sum()
+        blocks = random.choices(window, weights=weights, k=3)
 
-        
-        if len(set(vars_)) < 3:
-            continue
+      
+        while True:
+            vs = [ random.randrange(b*n, (b+1)*n) for b in blocks ]
+            if len(set(vs)) == 3:
+                break
 
-        
-        clause = [(v + 1) * random.choice([-1, 1]) for v in vars_]
-        clauses.append(clause)
+    
+        lits = [ (v+1) * random.choice([-1,1]) for v in vs ]
 
+
+        if center < anchor_b or center >= L - anchor_b:
+            lits[0] = abs(lits[0])
+
+        clauses.append(lits)
     return clauses
 
 
 
-
 def solve_glucose(clauses):
-    solver = Glucose3()
-    solver.append_formula(clauses)
-    result = solver.solve()
-    solver.delete()
-    return result
+    s = Glucose3()
+    s.append_formula(clauses)
+    ok = s.solve()
+    s.delete()
+    return ok
 
+def solve_uniform(r):
+    return solve_glucose( generate_uniform_3sat(n_vars, r) )
 
-def solve_uniform_instance(r):
-    clauses = generate_uniform_3sat(n_vars, r)
-    return solve_glucose(clauses)
-
-
-def solve_spatial_instance(r):
-    clauses = generate_tailbiting_spatially_coupled_3sat(L, n, r, w)
-    return solve_glucose(clauses)
+def solve_sc(r):
+    return solve_glucose(
+        generate_tailbiting_sc_3sat(L, n, r, w, anchor_b, bias_strength)
+    )
 
 
 
 def run_experiment(label, solver_fn):
-    print(f"\n🔍 Running: {label}")
-    results = defaultdict(list)
-    for rep in range(repeats):
-        print(f"  🔁 Repeat {rep + 1}/{repeats}")
-        for r in tqdm(ratios, desc=f"{label} (rep {rep+1})"):
-            outcomes = Parallel(n_jobs=n_jobs)(
+    print(f"\n {label}")
+    data = defaultdict(list)
+    for rep in range(1, repeats+1):
+        print(f" Repeat {rep}/{repeats}")
+        for r in tqdm(ratios, desc=f"   {label}"):
+            outs = Parallel(n_jobs=n_jobs)(
                 delayed(solver_fn)(r) for _ in range(n_instances)
             )
-            sat_frac = sum(outcomes) / len(outcomes)
-            results[r].append(sat_frac)
-    return results
+            frac = sum(outs)/n_instances
+            data[r].append(frac)
+    return data
 
 
+def plot_results(unif, sc):
+    mu_u = [np.mean(unif[r]) for r in ratios]
+    sd_u = [np.std (unif[r]) for r in ratios]
+    mu_s = [np.mean(sc[r])  for r in ratios]
+    sd_s = [np.std (sc[r])  for r in ratios]
 
-def plot_results(uniform_results, spatial_results):
-    mean_uniform = [np.mean(uniform_results[r]) for r in ratios]
-    std_uniform = [np.std(uniform_results[r]) for r in ratios]
-
-    mean_spatial = [np.mean(spatial_results[r]) for r in ratios]
-    std_spatial = [np.std(spatial_results[r]) for r in ratios]
-
-    plt.figure(figsize=(14, 6))
-    plt.errorbar(ratios, mean_uniform, yerr=std_uniform, fmt='o-', capsize=4, label="Uniform 3-SAT")
-    plt.errorbar(ratios, mean_spatial, yerr=std_spatial, fmt='x-', capsize=4, label="SC 3-SAT (Tailbiting)")
-    plt.axvline(4.26, color='red', linestyle='--', label='Phase Transition r ≈ 4.26')
+    plt.figure(figsize=(12,6))
+    plt.errorbar(ratios, mu_u, yerr=sd_u, fmt='o-', capsize=4, label='Uniform 3-SAT')
+    plt.errorbar(ratios, mu_s, yerr=sd_s, fmt='x-', capsize=4, label='SC 3-SAT (Tailbiting)')
+    plt.axvline(4.26, color='red', linestyle='--', label='Theory r≈4.26')
     plt.xlabel("Clause-to-Variable Ratio (r)")
     plt.ylabel("Fraction Satisfiable")
-    plt.title("3-SAT Phase Transition: Glucose vs Spatial Coupling (Tailbiting)")
+    plt.title("3-SAT Phase Transition: Glucose vs SC Tailbiting")
     plt.grid(True)
     plt.legend()
     plt.tight_layout()
     plt.show()
 
 
-
-
-if __name__ == "__main__":
-    uniform = run_experiment("Uniform 3-SAT", solve_uniform_instance)
-    spatial = run_experiment("Spatial Coupled 3-SAT", solve_spatial_instance)
-    plot_results(uniform, spatial)
+if __name__=="__main__":
+    uniform_data = run_experiment("Uniform 3-SAT", solve_uniform)
+    sc_data      = run_experiment("SC 3-SAT (Tailbiting)", solve_sc)
+    plot_results(uniform_data, sc_data)
