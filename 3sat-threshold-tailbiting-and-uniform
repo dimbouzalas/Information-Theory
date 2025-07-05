@@ -13,7 +13,7 @@ n_instances = 100
 repeats     = 5
 n_jobs      = 8
 
-# SC parameters: ensure L * n == n_vars
+
 L           = 10             
 n           = 10             
 w           = 4             
