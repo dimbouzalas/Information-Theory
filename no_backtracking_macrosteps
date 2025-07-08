@@ -1,1 +1,203 @@
+import random
+import matplotlib.pyplot as plt
+from collections import defaultdict
+from ipywidgets import FloatText, IntText, Text, Button, VBox, HBox, Label, Output
+from IPython.display import display, FileLink, clear_output
+
+
+def generate_spatially_coupled_clauses(L, N_per_block, w, densities):
+    total_vars = L * N_per_block
+    all_clauses = []
+
+    for k, rk in densities.items():
+        M = int(round(rk * total_vars))
+        for _ in range(M):
+            start_block = random.randint(0, L - 1)
+            window_blocks = [(start_block + offset) % L for offset in range(w)]
+
+            vars_pool = []
+            for b in window_blocks:
+                start = b * N_per_block + 1
+                end = (b + 1) * N_per_block + 1
+                vars_pool.extend(range(start, end))
+
+            chosen = random.sample(vars_pool, k)
+            lits = [v if random.choice([True, False]) else -v for v in chosen]
+            all_clauses.append(lits)
+
+    return all_clauses
+
+
+def parse_dimacs_with_blocks(filename, L, N_per_block):
+    clauses = []
+    var_to_block = {}
+    with open(filename, 'r') as f:
+        for line in f:
+            if line.startswith('p'):
+                _, _, nvars, _ = line.strip().split()
+                nvars = int(nvars)
+            elif not line.startswith('c'):
+                lits = [int(x) for x in line.strip().split() if x != '0']
+                clauses.append(lits)
+                for lit in lits:
+                    var = abs(lit)
+                    if var not in var_to_block:
+                        var_to_block[var] = (var - 1) // N_per_block % L
+    return clauses, var_to_block, nvars
+
+
+def simplify_cnf(clauses, assignment):
+    simplified = []
+    for cl in clauses:
+        new_clause = []
+        satisfied = False
+        for lit in cl:
+            var = abs(lit)
+            val = lit > 0
+            if var in assignment:
+                if assignment[var] == val:
+                    satisfied = True
+                    break
+            else:
+                new_clause.append(lit)
+        if not satisfied:
+            if not new_clause:
+                return None
+            simplified.append(new_clause)
+    return simplified
+
+
+def run_ucp_macrosteps(clauses, var_to_block, L, output_area):
+    assignment = {}
+    macro_lengths = []
+
+    def enqueue_unit_clauses(current_clauses):
+        return [cl[0] for cl in current_clauses if len([lit for lit in cl if abs(lit) not in assignment]) == 1]
+
+    with output_area:
+        print("Starting UCP with macro-step tracking...")
+
+    while True:
+        unit_queue = enqueue_unit_clauses(clauses)
+
+        if not unit_queue:
+            unassigned = [v for v in var_to_block if v not in assignment]
+            if not unassigned:
+                break
+
+            for b in reversed(range(L)):
+                candidates = [v for v in unassigned if var_to_block[v] == b]
+                if candidates:
+                    var = candidates[0]
+                    assignment[var] = True
+                    clauses = simplify_cnf(clauses, assignment)
+                    if clauses is None:
+                        with output_area:
+                            print(f"Conflict after assigning var {var} = True")
+                        return None, macro_lengths
+                    macro_len = 1
+                    unit_queue = enqueue_unit_clauses(clauses)
+                    break
+        else:
+            macro_len = 0
+
+        while unit_queue:
+            lit = unit_queue.pop(0)
+            var = abs(lit)
+            val = lit > 0
+            if var in assignment:
+                if assignment[var] != val:
+                    with output_area:
+                        print(f"Conflict on var {var}")
+                    return None, macro_lengths
+            else:
+                assignment[var] = val
+                macro_len += 1
+                clauses = simplify_cnf(clauses, assignment)
+                if clauses is None:
+                    with output_area:
+                        print(f"Conflict during forced propagation (var {var})")
+                    return None, macro_lengths
+                unit_queue = enqueue_unit_clauses(clauses)
+
+        macro_lengths.append(macro_len)
+
+    with output_area:
+        print("UCP finished.")
+        print(f"Variables assigned: {len(assignment)} out of {len(var_to_block)}")
+        print(f"Macro-steps taken: {len(macro_lengths)}")
+    return assignment, macro_lengths
+
+
+plot_area = Output()
+
+def plot_macro_lengths(x):
+    plot_area.clear_output()
+    with plot_area:
+        fig, ax = plt.subplots(figsize=(10, 4))
+        ax.bar(range(1, len(x) + 1), x)
+        ax.set_xlabel("Macro-step index")
+        ax.set_ylabel("Macro-step length")
+        ax.set_title("Length of each macro-step during UCP")
+        plt.grid(True)
+        plt.tight_layout()
+        plt.show()
+
+
+r2 = FloatText(1.0, description='r₂:')
+r3 = FloatText(4.2, description='r₃:')
+r4 = FloatText(8.0, description='r₄:')
+r5 = FloatText(10.5, description='r₅:')
+N = IntText(150, description='N (total vars):')
+L = IntText(30, description='L (blocks):')
+w = IntText(3, description='w (coupling width):')
+out_fn = Text('mixed.cnf', description='Output fn:')
+btn = Button(description='Generate CNF & Run UCP', button_style='success')
+output_area = Output()
+
+
+def on_click(b):
+    output_area.clear_output()
+    plot_area.clear_output()
+
+    total_N = N.value
+    L_blocks = L.value
+    width = w.value
+    N_per_block = total_N // L_blocks
+
+    if total_N % L_blocks != 0:
+        with output_area:
+            print("Error: N must be divisible by L.")
+        return
+
+    densities = {2: r2.value, 3: r3.value, 4: r4.value, 5: r5.value}
+    all_clauses = generate_spatially_coupled_clauses(L_blocks, N_per_block, width, densities)
+
+    with open(out_fn.value, 'w') as f:
+        f.write(f"p cnf {total_N} {len(all_clauses)}\n")
+        for clause in all_clauses:
+            f.write(" ".join(str(lit) for lit in clause) + " 0\n")
+
+    with output_area:
+        display(Label(f"Wrote {len(all_clauses)} clauses → “{out_fn.value}”"))
+        display(FileLink(out_fn.value))
+
+    clauses, var_to_block, _ = parse_dimacs_with_blocks(out_fn.value, L_blocks, N_per_block)
+    assignment, macro_lengths = run_ucp_macrosteps(clauses, var_to_block, L_blocks, output_area)
+
+    if macro_lengths:
+        plot_macro_lengths(macro_lengths)
+
+btn.on_click(on_click)
+
+
+ui = VBox([
+    HBox([r2, r3, r4, r5]),
+    HBox([N, L, w]),
+    HBox([out_fn]),
+    btn,
+    output_area,
+    plot_area  
+])
+display(ui)
 
