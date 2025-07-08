@@ -1,0 +1,177 @@
+import random
+import copy
+from collections import defaultdict
+from ipywidgets import FloatText, IntText, Text, Button, VBox, HBox, Label, Output
+from IPython.display import display, FileLink, clear_output
+
+
+def generate_spatially_coupled_clauses(L, N_per_block, w, densities):
+    total_vars = L * N_per_block
+    all_clauses = []
+
+    for k, rk in densities.items():
+        M = int(round(rk * total_vars))
+        for _ in range(M):
+            start_block = random.randint(0, L - 1)
+            window_blocks = [(start_block + offset) % L for offset in range(w)]
+
+            vars_pool = []
+            for b in window_blocks:
+                start = b * N_per_block + 1
+                end = (b + 1) * N_per_block + 1
+                vars_pool.extend(range(start, end))
+
+            chosen = random.sample(vars_pool, k)
+            lits = [v if random.choice([True, False]) else -v for v in chosen]
+            all_clauses.append(lits)
+
+    return all_clauses
+
+
+def parse_dimacs_with_blocks(filename, L, N_per_block):
+    clauses = []
+    var_to_block = {}
+    with open(filename, 'r') as f:
+        for line in f:
+            if line.startswith('p'):
+                _, _, nvars, _ = line.strip().split()
+                nvars = int(nvars)
+            elif not line.startswith('c'):
+                lits = [int(x) for x in line.strip().split() if x != '0']
+                clauses.append(lits)
+                for lit in lits:
+                    var = abs(lit)
+                    if var not in var_to_block:
+                        var_to_block[var] = (var - 1) // N_per_block % L
+    return clauses, var_to_block, nvars
+
+def run_ucp_with_retry(clauses, var_to_block, L, output_area):
+    def simplify_cnf(clauses, assignment):
+        simplified = []
+        for cl in clauses:
+            new_clause = []
+            satisfied = False
+            for lit in cl:
+                var = abs(lit)
+                val = lit > 0
+                if var in assignment:
+                    if assignment[var] == val:
+                        satisfied = True
+                        break
+                else:
+                    new_clause.append(lit)
+            if not satisfied:
+                if not new_clause:
+                    return None
+                simplified.append(new_clause)
+        return simplified
+
+    def ucp_internal(clauses, assignment):
+        unit_queue = []
+
+        def enqueue_unit_clauses():
+            for cl in clauses:
+                unassigned = [lit for lit in cl if abs(lit) not in assignment]
+                if len(unassigned) == 1:
+                    unit_queue.append(unassigned[0])
+
+        enqueue_unit_clauses()
+
+        while True:
+            while unit_queue:
+                lit = unit_queue.pop(0)
+                var = abs(lit)
+                val = lit > 0
+                if var in assignment:
+                    if assignment[var] != val:
+                        return None  
+                else:
+                    assignment[var] = val
+                    clauses = simplify_cnf(clauses, assignment)
+                    if clauses is None:
+                        return None
+                    enqueue_unit_clauses()
+
+            unassigned = [v for v in var_to_block if v not in assignment]
+            if not unassigned:
+                break
+
+            
+            for b in reversed(range(L)):
+                candidates = [v for v in unassigned if var_to_block[v] == b]
+                if candidates:
+                    var = candidates[0]
+                    for trial_val in [True, False]:
+                        trial_assign = copy.deepcopy(assignment)
+                        trial_assign[var] = trial_val
+                        trial_clauses = simplify_cnf(clauses, trial_assign)
+                        if trial_clauses is not None:
+                            result = ucp_internal(trial_clauses, trial_assign)
+                            if result is not None:
+                                return result
+                    return None  
+        return assignment
+
+    with output_area:
+        print("Starting UCP with retry on conflict...")
+
+    result = ucp_internal(clauses, {})
+    with output_area:
+        if result is None:
+            print("UCP failed: instance UNSAT (both choices failed at some decision point)")
+        else:
+            print("UCP succeeded.")
+            print(f"Variables assigned: {len(result)} out of {len(var_to_block)}")
+    return result
+
+# --- Widgets ---
+r2 = FloatText(1.0, description='r₂:')
+r3 = FloatText(4.2, description='r₃:')
+r4 = FloatText(8.0, description='r₄:')
+r5 = FloatText(10.5, description='r₅:')
+N = IntText(150, description='N (total vars):')
+L = IntText(30, description='L (blocks):')
+w = IntText(3, description='w (coupling width):')
+out_fn = Text('mixed.cnf', description='Output fn:')
+btn = Button(description='Generate CNF & Run UCP', button_style='success')
+output_area = Output()
+
+
+def on_click(b):
+    output_area.clear_output()
+    total_N = N.value
+    L_blocks = L.value
+    width = w.value
+    N_per_block = total_N // L_blocks
+
+    if total_N % L_blocks != 0:
+        with output_area:
+            print("Error: N must be divisible by L.")
+        return
+
+    densities = {2: r2.value, 3: r3.value, 4: r4.value, 5: r5.value}
+    all_clauses = generate_spatially_coupled_clauses(L_blocks, N_per_block, width, densities)
+
+    with open(out_fn.value, 'w') as f:
+        f.write(f"p cnf {total_N} {len(all_clauses)}\n")
+        for clause in all_clauses:
+            f.write(" ".join(str(lit) for lit in clause) + " 0\n")
+
+    with output_area:
+        display(Label(f"Wrote {len(all_clauses)} clauses → “{out_fn.value}”"))
+        display(FileLink(out_fn.value))
+
+    clauses, var_to_block, _ = parse_dimacs_with_blocks(out_fn.value, L_blocks, N_per_block)
+    run_ucp_with_retry(clauses, var_to_block, L_blocks, output_area)
+
+btn.on_click(on_click)
+
+
+ui = VBox([
+    HBox([r2, r3, r4, r5]),
+    HBox([N, L, w]),
+    HBox([out_fn]),
+    btn,
+    output_area
+])
+display(ui)
