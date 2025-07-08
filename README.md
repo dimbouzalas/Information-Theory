@@ -1,1 +1,3 @@
-Every file is .ipinb except the ones which are already .py
+Every file is .ipinb
+Each file builds upon the previous 
+1)
